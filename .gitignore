@@ -1,0 +1,7 @@
+node_modules/
+.env
+*.log
+automod_data/
+automod_crash.log
+automod_security.log
+SirLoin_Data/
