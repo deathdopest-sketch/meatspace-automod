@@ -63,12 +63,16 @@ const _INJECTION_PATTERNS = [
 ];
 
 // ── Automod patterns ──────────────────────────────────────────────────────────
-const AUTOMOD_KICK = [
+// Slurs are separate from AUTOMOD_KICK so they can be toggled off and extended
+// at runtime via .slurfilter / .badword — see _checkAutoMod / _handleCommand.
+const AUTOMOD_SLURS = [
   /\bn[i1!|]gg[e3]r\b/i,
   /\bn[i1!|]gg[a@]\b/i,
   /\bk[i1!]k[e3]\b/i,
   /\bsp[i1!]c\b/i,
   /\bc[o0]on\b.*\b(monkey|ape|porch)\b/i,
+];
+const AUTOMOD_KICK = [
   /\b(i('ll| will|'m going to|am going to))\s+(kill|murder|rape|shoot|stab)\s+(you|u|everyone|them)\b/i,
   /\b\d{1,5}\s+[A-Za-z]{3,}\s+(st|street|rd|road|ave|avenue|dr|drive|blvd|lane|ln)\b/i,
 ];
@@ -117,6 +121,9 @@ class AutomodBot {
     this._attackTracker  = new Map();
     this._promotions     = this._loadPromotions();
     this._autoban        = new Set(['shenron']);
+    const _slur          = this._loadSlurFilter();
+    this._slurFilterOn   = _slur.enabled;
+    this._badWords       = new Set(_slur.badWords);
 
     // VoteBan
     this._voteBanState    = new Map(); // roomName → vote state
@@ -147,6 +154,15 @@ class AutomodBot {
 
     this._startDailyEmail();
     this.log.info('[AutoMod] Online — meatspace is being watched.');
+  }
+
+  /** Resolves once the underlying Chrome connection is lost (crash, kill, VM suspend, etc). */
+  _waitForDisconnect() {
+    return new Promise((resolve) => {
+      const b = this.browser.browser;
+      if (!b) { resolve(); return; }
+      b.once('disconnected', resolve);
+    });
   }
 
   async stop() {
@@ -317,6 +333,8 @@ class AutomodBot {
       onUnsubscribe:   (r, nick)                => {
         if (nick && this._broadcasting[r]) this._broadcasting[r].delete(nick.toLowerCase());
       },
+      onMedia:         (r, info)                => this._onMedia(r, info, page),
+      onSysMsg:        (r, text)                 => this._onSysMsg(r, text, page),
     };
   }
 
@@ -371,6 +389,93 @@ class AutomodBot {
         this._roomPresence[roomName].add(u.nick.toLowerCase());
       }
     }
+  }
+
+  // Users who stop 2+ tracks within 5 minutes get their room role revoked.
+  static SONG_STOP_LIMIT     = 2;
+  static SONG_STOP_WINDOW_MS = 5 * 60 * 1000;
+
+  async _onMedia(roomName, info, page) {
+    if (info.action !== 'stop' || !info.nick) return;
+    const nick = info.nick;
+    if (nick === this._getRoomNick(roomName)) return;
+
+    const key = nick.toLowerCase();
+    const now = Date.now();
+    if (!this._songStopTracker) this._songStopTracker = new Map();
+    const stops = (this._songStopTracker.get(key) || []).filter(ts => now - ts < AutomodBot.SONG_STOP_WINDOW_MS);
+    stops.push(now);
+    this._songStopTracker.set(key, stops);
+
+    if (stops.length < AutomodBot.SONG_STOP_LIMIT) return;
+    this._songStopTracker.delete(key); // reset so this only fires once per burst
+
+    const role = await this._getSiteRole(page, nick);
+    if (role === 'owner' || role === 'super') {
+      this.log.info(`[AutoMod:${roomName}] ${nick} hit song-stop threshold but is ${role} — skipping revoke`);
+      return;
+    }
+
+    const revoked = await this._moderateUser(page, nick, 'revoke');
+    if (revoked) {
+      this.log.warn(`[${roomName}] AutoMod REVOKE ${nick} (song-stop spam)`);
+      this._pushModLog('automod-revoke', 'SirLoin', nick);
+      await this._send(roomName, page, `${nick} has been stripped of their roles, stopping other peoples music is a cunt act`);
+    }
+  }
+
+  // Room-role holders who ban more than 3 people within a couple minutes get
+  // their own role stripped — parsed from the chat-visible SysMsg text since
+  // the raw 'ban' WS frame only carries the target, not who performed it.
+  static BAN_SPREE_LIMIT     = 3;
+  static BAN_SPREE_WINDOW_MS = 3 * 60 * 1000;
+
+  async _onSysMsg(roomName, text, page) {
+    if (!text) return;
+    const m = /^(.+?)\s*\((.+?)\)\s+has banned\s+(.+?)\s*\((.+?)\)/i.exec(text);
+    if (!m) return;
+    const actorNick = m[1].trim();
+    if (actorNick === this._getRoomNick(roomName)) return; // don't count our own bans
+
+    const key = actorNick.toLowerCase();
+    const now = Date.now();
+    if (!this._banSpreeTracker) this._banSpreeTracker = new Map();
+    const bans = (this._banSpreeTracker.get(key) || []).filter(ts => now - ts < AutomodBot.BAN_SPREE_WINDOW_MS);
+    bans.push(now);
+    this._banSpreeTracker.set(key, bans);
+
+    if (bans.length <= AutomodBot.BAN_SPREE_LIMIT) return;
+    this._banSpreeTracker.delete(key); // reset so this only fires once per spree
+
+    const role = await this._getSiteRole(page, actorNick);
+    if (role === 'owner' || role === 'super') {
+      this.log.info(`[AutoMod:${roomName}] ${actorNick} hit ban-spree threshold but is ${role} — skipping revoke`);
+      return;
+    }
+
+    const revoked = await this._moderateUser(page, actorNick, 'revoke');
+    if (revoked) {
+      this.log.warn(`[${roomName}] AutoMod REVOKE ${actorNick} (ban spree)`);
+      this._pushModLog('automod-revoke', 'SirLoin', actorNick);
+      await this._send(roomName, page, `${actorNick} has been stripped of their roles for banning people like it's a personal vendetta.`);
+    }
+  }
+
+  /** Reads the live role badge (Owner/Super/Mod/Operator) for a user from the DOM. */
+  async _getSiteRole(page, nick) {
+    if (!page) return null;
+    try {
+      return await page.evaluate((n) => {
+        for (const li of document.querySelectorAll('li.bar')) {
+          const d = li.querySelector('span.nickname')?.textContent?.trim() || '';
+          const u = li.querySelector('span.username')?.textContent?.trim()  || '';
+          if (d.toLowerCase() === n.toLowerCase() || u.toLowerCase() === n.toLowerCase()) {
+            return li.querySelector('.role')?.textContent?.trim()?.toLowerCase() || null;
+          }
+        }
+        return null;
+      }, nick);
+    } catch (_) { return null; }
   }
 
   async _onMessage(roomName, nick, text, handle, page) {
@@ -636,6 +741,100 @@ class AutomodBot {
         return;
       }
 
+      case 'slurfilter': {
+        if (!isAdmin) return;
+        const setting = args[0]?.toLowerCase();
+        if (setting !== 'on' && setting !== 'off') {
+          await this._send(roomName, page, `Slur filter is currently ${this._slurFilterOn ? 'ON' : 'OFF'}. Usage: .slurfilter on|off`);
+          return;
+        }
+        this._slurFilterOn = setting === 'on';
+        this._saveSlurFilter();
+        this._pushModLog('slurfilter', nick, setting);
+        await this._send(roomName, page, `Slur filter turned ${setting.toUpperCase()}.`);
+        return;
+      }
+
+      case 'badword': {
+        if (!isAdmin) return;
+        const sub = args[0]?.toLowerCase();
+        if (sub === 'add') {
+          const word = args[1]?.toLowerCase();
+          if (!word) { await this._send(roomName, page, 'Usage: .badword add <word>'); return; }
+          this._badWords.add(word);
+          this._saveSlurFilter();
+          this._pushModLog('badword-add', nick, word);
+          await this._send(roomName, page, `"${word}" added to the bad word list.`);
+          return;
+        }
+        if (sub === 'remove') {
+          const word = args[1]?.toLowerCase();
+          if (!word) { await this._send(roomName, page, 'Usage: .badword remove <word>'); return; }
+          this._badWords.delete(word);
+          this._saveSlurFilter();
+          this._pushModLog('badword-remove', nick, word);
+          await this._send(roomName, page, `"${word}" removed from the bad word list.`);
+          return;
+        }
+        if (sub === 'list') {
+          await this._send(roomName, page, this._badWords.size
+            ? `🚫 Bad words (${this._badWords.size}): ${[...this._badWords].join(', ')}`
+            : 'No custom bad words set.');
+          return;
+        }
+        await this._send(roomName, page, 'Usage: .badword add|remove|list <word>');
+        return;
+      }
+
+      case 'webcam': {
+        if (!isAdmin) return;
+        const setting = args[0]?.toLowerCase();
+        if (setting !== 'fake' && setting !== 'real') {
+          await this._send(roomName, page, `Webcam is currently ${this._fakeCamOn ? 'FAKE' : 'REAL'}. Usage: .webcam fake|real`);
+          return;
+        }
+        this._fakeCamOn = setting === 'fake';
+        await this.browser.setFakeCam(page, this._fakeCamOn);
+        await this._send(roomName, page, `Webcam set to ${setting.toUpperCase()}.`);
+        return;
+      }
+
+      case 'afk': {
+        const target = args[0];
+        if (!target) { await this._send(roomName, page, 'Usage: .afk <user>'); return; }
+        if (target.toLowerCase() === nick.toLowerCase()) {
+          await this._send(roomName, page, `${nick} — you can't afk-check yourself.`);
+          return;
+        }
+        const limit     = isMod ? 3 : 1;
+        const windowMs  = 10 * 60 * 1000;
+        const key       = nick.toLowerCase();
+        if (!this._afkCommandUses) this._afkCommandUses = new Map();
+        const uses = (this._afkCommandUses.get(key) || []).filter(ts => Date.now() - ts < windowMs);
+        if (uses.length >= limit) {
+          await this._send(roomName, page, `${nick} — you can only use .afk ${limit} time${limit > 1 ? 's' : ''} per 10 minutes.`);
+          return;
+        }
+        uses.push(Date.now());
+        this._afkCommandUses.set(key, uses);
+
+        const targetLow  = target.toLowerCase();
+        const checkStart = this._userLastActive[roomName]?.get(targetLow) || 0;
+        await this._send(roomName, page, `${target} — you have 3 minutes to type something or your broadcast gets closed.`);
+
+        setTimeout(async () => {
+          const lastActive = this._userLastActive[roomName]?.get(targetLow) || 0;
+          if (lastActive > checkStart) return; // they typed since the check started
+          const roomPage = this._rooms[roomName]?.page;
+          const closed = await this._closeUserBroadcast(roomPage, target);
+          if (closed) {
+            this._pushModLog('automod-afk-close', 'SirLoin', target);
+            await this._send(roomName, roomPage, `${target} — closed for being AFK.`);
+          }
+        }, 3 * 60 * 1000);
+        return;
+      }
+
       case 'autoban-list': {
         if (!isAdmin) return;
         if (this._autoban.size === 0) { await this._send(roomName, page, 'Autoban list is empty.'); return; }
@@ -646,7 +845,7 @@ class AutomodBot {
       case 'help':
       case 'commands': {
         if (!isMod) return;
-        await this._send(roomName, page, 'Mod: .kick .ban .warn .mute .unmute .autoban .forgive .autoban-list .roster .uptime .renick');
+        await this._send(roomName, page, 'Mod: .kick .ban .warn .mute .unmute .autoban .forgive .autoban-list .roster .uptime .renick .slurfilter .badword .webcam — Everyone: .afk .voteban');
         return;
       }
 
@@ -759,6 +958,32 @@ class AutomodBot {
   async _checkAutoMod(roomName, nick, text, handle, page) {
     const role = this._getEffectiveRole(nick, handle);
     if (role === 'owner' || role === 'admin') return false;
+
+    if (this._slurFilterOn) {
+      for (const pattern of AUTOMOD_SLURS) {
+        if (pattern.test(text)) {
+          this.log.warn(`[${roomName}] AutoMod KICK ${nick} (slur)`);
+          const kicked = await this._kickUser(page, nick);
+          if (kicked) {
+            this._pushModLog('automod-kick', 'SirLoin', nick);
+            await this._send(roomName, page, `${nick} — out. No warnings for that.`);
+          }
+          return true;
+        }
+      }
+      for (const word of this._badWords) {
+        const pattern = new RegExp(`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+        if (pattern.test(text)) {
+          this.log.warn(`[${roomName}] AutoMod KICK ${nick} (badword: ${word})`);
+          const kicked = await this._kickUser(page, nick);
+          if (kicked) {
+            this._pushModLog('automod-kick', 'SirLoin', nick);
+            await this._send(roomName, page, `${nick} — out. No warnings for that.`);
+          }
+          return true;
+        }
+      }
+    }
 
     for (const pattern of AUTOMOD_KICK) {
       if (pattern.test(text)) {
@@ -964,6 +1189,77 @@ class AutomodBot {
     }
   }
 
+  /** Clicks a user's video tile, unhides it if needed, then clicks Close Broadcast. */
+  async _closeUserBroadcast(page, targetNick) {
+    if (!page) return false;
+    try {
+      const tileCoords = await page.evaluate((nick) => {
+        const container = document.querySelector('#regularvideos');
+        if (!container) return null;
+        for (const tile of container.querySelectorAll('.js-video')) {
+          const n = tile.querySelector('.nickname')?.textContent?.trim() || '';
+          if (n.toLowerCase() === nick.toLowerCase()) {
+            const wrapper = tile.querySelector('.video-wrapper') || tile;
+            const r = wrapper.getBoundingClientRect();
+            if (r.width > 0 && r.height > 0) return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+          }
+        }
+        return null;
+      }, targetNick);
+
+      if (!tileCoords) return false; // not currently broadcasting
+
+      await page.mouse.click(tileCoords.x, tileCoords.y);
+      await sleep(600);
+
+      // Unhide first if the tile is currently hidden (Unhide item visible = currently hidden).
+      const unhideCoords = await page.evaluate(() => {
+        const el = document.querySelector('.video-menu-item:not(.hidden) > a[data-action="unhide"]');
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return r.width > 0 ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : null;
+      });
+      if (unhideCoords) {
+        await page.mouse.click(unhideCoords.x, unhideCoords.y);
+        await sleep(500);
+        // Menu closes after unhide — reopen it on the same tile.
+        await page.mouse.click(tileCoords.x, tileCoords.y);
+        await sleep(600);
+      }
+
+      const closeCoords = await page.evaluate(() => {
+        const el = document.querySelector('a[data-action="close"]');
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return r.width > 0 ? { x: r.left + r.width / 2, y: r.top + r.height / 2 } : null;
+      });
+      if (!closeCoords) { await this._closeModal(page); return false; }
+
+      await page.mouse.click(closeCoords.x, closeCoords.y);
+      await sleep(500);
+
+      const confirmCoords = await page.evaluate(() => {
+        for (const el of document.querySelectorAll('button, a, [role="button"]')) {
+          const t = (el.textContent?.trim() || '').toLowerCase();
+          if (t === 'confirm' || t === 'yes' || t === 'ok') {
+            const r = el.getBoundingClientRect();
+            if (r.width > 0 && r.height > 0) return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+          }
+        }
+        return null;
+      });
+      if (confirmCoords) { await page.mouse.click(confirmCoords.x, confirmCoords.y); await sleep(400); }
+
+      await this._closeModal(page);
+      this.log.info(`[AutoMod] Closed broadcast for ${targetNick}`);
+      return true;
+    } catch (e) {
+      this.log.warn(`[AutoMod] _closeUserBroadcast(${targetNick}) error: ${e.message}`);
+      await this._closeModal(page).catch(() => {});
+      return false;
+    }
+  }
+
   async _closeModal(page) {
     try {
       await page.evaluate(() => {
@@ -1142,6 +1438,7 @@ class AutomodBot {
   _promotionFile()   { return path.join(__dirname, 'SirLoin_Data', 'promotions.json'); }
   _attackerFile()    { return path.join(__dirname, 'SirLoin_Data', 'attackers.json');  }
   _autoBanFile()     { return path.join(__dirname, 'SirLoin_Data', 'autoban.json');    }
+  _slurFilterFile()  { return path.join(__dirname, 'SirLoin_Data', 'slurfilter.json'); }
 
   _loadModeration() {
     try {
@@ -1214,6 +1511,24 @@ class AutomodBot {
   _saveAutoBan() {
     try { fs.writeFileSync(this._autoBanFile(), JSON.stringify([...this._autoban], null, 2), 'utf8'); }
     catch (_) {}
+  }
+
+  _loadSlurFilter() {
+    try {
+      const f = this._slurFilterFile();
+      if (!fs.existsSync(f)) return { enabled: true, badWords: [] };
+      const data = JSON.parse(fs.readFileSync(f, 'utf8'));
+      return { enabled: data.enabled !== false, badWords: Array.isArray(data.badWords) ? data.badWords : [] };
+    } catch (_) { return { enabled: true, badWords: [] }; }
+  }
+
+  _saveSlurFilter() {
+    try {
+      fs.writeFileSync(this._slurFilterFile(), JSON.stringify({
+        enabled:  this._slurFilterOn,
+        badWords: [...this._badWords],
+      }, null, 2), 'utf8');
+    } catch (_) {}
   }
 
   // ── Security log ─────────────────────────────────────────────────────────────
@@ -1351,12 +1666,32 @@ ${table}
 // Entry point
 // =============================================================================
 async function main() {
-  const bot = new AutomodBot();
+  let shuttingDown = false;
+  let currentBot   = null;
 
-  process.on('SIGINT',  () => { console.log('\n[AutoMod] SIGINT received'); bot.stop().then(() => process.exit(0)).catch(() => process.exit(1)); });
-  process.on('SIGTERM', () => { console.log('\n[AutoMod] SIGTERM received'); bot.stop().then(() => process.exit(0)).catch(() => process.exit(1)); });
+  process.on('SIGINT',  () => { shuttingDown = true; console.log('\n[AutoMod] SIGINT received'); currentBot?.stop().then(() => process.exit(0)).catch(() => process.exit(1)); });
+  process.on('SIGTERM', () => { shuttingDown = true; console.log('\n[AutoMod] SIGTERM received'); currentBot?.stop().then(() => process.exit(0)).catch(() => process.exit(1)); });
 
-  await bot.start();
+  let attempt = 0;
+  while (!shuttingDown) {
+    attempt++;
+    const bot = new AutomodBot();
+    currentBot = bot;
+    try {
+      await bot.start();
+      attempt = 0; // reset backoff once a run actually comes up
+      await bot._waitForDisconnect();
+      if (shuttingDown) break;
+      console.error('[AutoMod] Browser disconnected unexpectedly — restarting.');
+    } catch (e) {
+      console.error(`[AutoMod] Fatal error (attempt ${attempt}):`, e);
+    }
+    await bot.stop().catch(() => {});
+    if (shuttingDown) break;
+    const delay = Math.min(30000, 2000 * attempt);
+    console.log(`[AutoMod] Restarting in ${delay / 1000}s...`);
+    await sleep(delay);
+  }
 }
 
 main().catch(e => {

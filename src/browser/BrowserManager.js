@@ -165,6 +165,11 @@ class BrowserManager {
         '--disable-infobars', '--window-size=1366,768',
         '--no-default-browser-check', '--disable-extensions',
         '--disable-web-security', '--autoplay-policy=no-user-gesture-required',
+        // NOT --use-fake-device-for-media-stream: that would force Chrome's
+        // synthetic test pattern at the browser level, defeating the
+        // fake-vs-real webcam toggle (window._zombFakeCam) in newPage().
+        '--use-fake-ui-for-media-stream',
+        '--ozone-platform=x11', '--use-gl=swiftshader',
         'about:blank',
       ];
       if (this.config.HEADLESS) browserArgs.push('--headless=new');
@@ -238,6 +243,7 @@ class BrowserManager {
       // of a real camera. _zombSlideshow drives what's painted on the canvas.
       (function _installZombCam() {
         if (!navigator.mediaDevices) return;
+        if (window._zombFakeCam === undefined) window._zombFakeCam = true;
         const _origGUM = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
 
         function _zombInitCanvas() {
@@ -306,7 +312,7 @@ class BrowserManager {
         }
 
         navigator.mediaDevices.getUserMedia = async function(constraints) {
-          if (constraints && constraints.video) {
+          if (constraints && constraints.video && window._zombFakeCam) {
             _zombInitCanvas();
             const videoTrack = window._zombStream.getVideoTracks()[0];
             if (constraints.audio) {
@@ -324,9 +330,19 @@ class BrowserManager {
           }
           return _origGUM(constraints);
         };
+        // getDisplayMedia is intentionally left untouched — StumbleChat's
+        // built-in screen/window share should capture the real desktop.
+        // --use-fake-ui-for-media-stream (see BrowserManager launch args)
+        // auto-picks a real capturable source instead of showing a picker,
+        // without needing a JS-level override here.
       })();
     });
     return page;
+  }
+
+  /** Switch a live page between the virtual canvas camera and the real webcam. */
+  async setFakeCam(page, enabled) {
+    try { await page.evaluate((v) => { window._zombFakeCam = v; }, enabled); } catch (_) {}
   }
 
   /** Gracefully close the browser (if we own the process). */

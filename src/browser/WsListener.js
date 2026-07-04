@@ -15,6 +15,7 @@
  *   onRaw(roomName, direction, msg)    ← all parsed frames
  *   onSubscribe(roomName, nick|null, handle)   ← user starts broadcasting
  *   onUnsubscribe(roomName, nick|null, handle) ← user stops broadcasting
+ *   onMedia(roomName, {source, action, title, url, handle, nick}) ← youtube/soundcloud play|stop
  *
  * Usage:
  *   const listener = new WsListener(roomName, page, selfNick, callbacks, logger);
@@ -459,18 +460,19 @@ class WsListener {
       }
 
       case 'youtube':
-      case 'youtube:play':
-      case 'youtube:stop': {
-        this.cb.onYouTube?.(this.roomName, msg);
-        break;
-      }
-
-      case 'soundcloud:play': {
+      case 'soundcloud': {
+        // msg.stumble is just the source name ('youtube'/'soundcloud'); the
+        // play-vs-stop distinction lives in msg.type, not in `t` — merged
+        // here since these two used to be handled by dead-code cases that
+        // never matched (`t` is never e.g. 'soundcloud:play').
+        const h = msg.handle ? String(msg.handle) : null;
         this.cb.onMedia?.(this.roomName, {
-          type  : 'soundcloud',
-          title : msg.title  || null,
-          url   : msg.url    || null,
-          handle: msg.handle ? String(msg.handle) : null,
+          source: msg.stumble,
+          action: msg.type || null,
+          title : msg.title || null,
+          url   : msg.url   || null,
+          handle: h,
+          nick  : h ? this._nickMap.get(h) || null : null,
         });
         break;
       }
