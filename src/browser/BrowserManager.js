@@ -32,7 +32,7 @@ class BrowserManager {
 
     this.browser         = null;
     this._browserProcess = null;
-    this._debugPort      = config.CDP_DEBUG_PORT || 9222;
+    this._debugPort      = Number(config.CDP_DEBUG_PORT || 9222);
     // Sanitize CHROME_USER_DATA — only allow a single directory name, never a path
     const rawUdd  = config.CHROME_USER_DATA || 'zomb-bot-chrome';
     const safeUdd = path.basename(rawUdd).replace(/[^a-zA-Z0-9_\-]/g, '_') || 'zomb-bot-chrome';
@@ -112,7 +112,7 @@ class BrowserManager {
   // ── Launch ────────────────────────────────────────────────────────────────
 
   async launch() {
-    this.log?.info('Launching browser...');
+    this.log?.info(`Launching browser on CDP port ${this._debugPort} with profile ${this._userDataDir}...`);
 
     // ── Docker mode ────────────────────────────────────────────────────────
     // Uses Xvfb virtual display (set up by docker-entrypoint.sh, DISPLAY=:99)
@@ -126,7 +126,8 @@ class BrowserManager {
         '--autoplay-policy=no-user-gesture-required',
         '--use-fake-ui-for-media-stream',
         '--use-fake-device-for-media-stream',
-        '--remote-debugging-port=9222',
+        `--remote-debugging-port=${this._debugPort}`,
+        `--user-data-dir=${this._userDataDir}`,
         '--disable-features=VizDisplayCompositor',
       ];
       this.browser = await puppeteerExtra.launch({

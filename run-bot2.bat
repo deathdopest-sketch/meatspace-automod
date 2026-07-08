@@ -1,0 +1,9 @@
+@echo off
+set AUTOMOD_INSTANCE_ID=bot2
+set CDP_DEBUG_PORT=9224
+set CHROME_USER_DATA=automod-chrome-bot2
+set SIRLOIN_DATA_DIR=SirLoin_Data_bot2
+set AUTOMOD_BOT_NICK=Enforcer2
+set AUTOMOD_LOGIN_EMAIL=account2@example.com
+set AUTOMOD_LOGIN_PASS=replace_me
+node automod.js
