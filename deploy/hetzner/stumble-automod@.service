@@ -1,0 +1,31 @@
+# One StumbleChat automod per instance: stumble-automod@<name>
+# Settings (login, room, nick) live in /etc/stumble-automod/<name>.env.
+[Unit]
+Description=StumbleChat automod (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=automod
+Group=automod
+WorkingDirectory=/opt/meatspace-automod
+EnvironmentFile=/etc/stumble-automod/%i.env
+Environment=NODE_ENV=production
+Environment=SERVER_MODE=true
+Environment=AUTOMOD_INSTANCE_ID=%i
+Environment=SIRLOIN_DATA_DIR=/var/lib/stumble-automod/%i
+# Folder name only: the bot keeps Chrome profiles in /tmp/<name>
+Environment=CHROME_USER_DATA=automod-chrome-%i
+Environment=PUPPETEER_CACHE_DIR=/opt/meatspace-automod/.cache/puppeteer
+# Real (non-headless) Chrome on a virtual display: StumbleChat's bot checks
+# accept it far more reliably than headless mode.
+ExecStart=/usr/bin/xvfb-run --auto-servernum --server-args="-screen 0 1366x768x24" /usr/local/bin/node automod.js
+Restart=always
+RestartSec=15
+TimeoutStopSec=20
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
