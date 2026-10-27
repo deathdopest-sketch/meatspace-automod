@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install or update the StumbleChat automod on a Linux server (run as root).
 #
-#   curl -fsSL https://raw.githubusercontent.com/deathdopest-sketch/meatspace-automod/main/deploy/hetzner/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/deathdopest-sketch/meatspace-automod/master/deploy/hetzner/install.sh | bash
 #   # or, from a checkout: bash deploy/hetzner/install.sh
 #
 # Safe to re-run: it pulls the latest code and reinstalls dependencies.
@@ -9,7 +9,7 @@ set -euo pipefail
 
 APP_DIR=/opt/meatspace-automod
 REPO=https://github.com/deathdopest-sketch/meatspace-automod.git
-BRANCH="${AUTOMOD_BRANCH:-main}"
+BRANCH="${AUTOMOD_BRANCH:-master}"
 NODE=/usr/local/bin/node
 export PUPPETEER_CACHE_DIR="$APP_DIR/.cache/puppeteer"
 

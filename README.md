@@ -100,7 +100,7 @@ On a server the bot runs a normal (not headless) Chrome against a virtual
 display (Xvfb) under systemd, one service per room. As root:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/deathdopest-sketch/meatspace-automod/main/deploy/hetzner/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/deathdopest-sketch/meatspace-automod/master/deploy/hetzner/install.sh | bash
 
 cp /opt/meatspace-automod/deploy/hetzner/instance.env.example /etc/stumble-automod/meatspace.env
 chmod 600 /etc/stumble-automod/meatspace.env
