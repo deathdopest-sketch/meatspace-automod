@@ -114,10 +114,10 @@ class BrowserManager {
   async launch() {
     this.log?.info(`Launching browser on CDP port ${this._debugPort} with profile ${this._userDataDir}...`);
 
-    // ── Docker mode ────────────────────────────────────────────────────────
-    // Uses Xvfb virtual display (set up by docker-entrypoint.sh, DISPLAY=:99)
+    // ── Server mode (Docker or a Linux server) ─────────────────────────────
+    // Uses an Xvfb virtual display (docker-entrypoint.sh, or xvfb-run under systemd).
     // headless:false with Xvfb is more compatible with StumbleChat than headless:'new'
-    if (process.env.DOCKER === 'true') {
+    if (process.env.DOCKER === 'true' || process.env.SERVER_MODE === 'true') {
       const args = [
         '--no-sandbox', '--disable-setuid-sandbox',
         '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled',
@@ -130,14 +130,21 @@ class BrowserManager {
         `--user-data-dir=${this._userDataDir}`,
         '--disable-features=VizDisplayCompositor',
       ];
+      // Puppeteer's own Chrome when no system browser is configured (Ubuntu's
+      // chromium package is a snap, which doesn't run under systemd).
+      let executablePath = process.env.BROWSER_PATH;
+      if (!executablePath && fs.existsSync('/usr/bin/chromium')) executablePath = '/usr/bin/chromium';
+      if (!executablePath) {
+        try { executablePath = require('puppeteer').executablePath(); } catch (_) {}
+      }
       this.browser = await puppeteerExtra.launch({
-        executablePath : process.env.BROWSER_PATH || '/usr/bin/chromium',
+        executablePath,
         headless       : false,
         args,
         defaultViewport: { width: 1366, height: 768 },
         env            : { ...process.env, DISPLAY: process.env.DISPLAY || ':99' },
       });
-      this.log?.info('Browser ready (Docker mode)');
+      this.log?.info(`Browser ready (server mode): ${executablePath || 'default'}`);
       return;
     }
 

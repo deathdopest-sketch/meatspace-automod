@@ -94,6 +94,27 @@ detection — the bot already forces `--ozone-platform=x11` and
 `--use-gl=swiftshader` to work around this, but if you're still stuck, make
 sure a graphical session (X11) is actually running and `$DISPLAY` is set.
 
+## Running on a Linux server (e.g. Hetzner)
+
+On a server the bot runs a normal (not headless) Chrome against a virtual
+display (Xvfb) under systemd, one service per room. As root:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/deathdopest-sketch/meatspace-automod/main/deploy/hetzner/install.sh | bash
+
+cp /opt/meatspace-automod/deploy/hetzner/instance.env.example /etc/stumble-automod/meatspace.env
+chmod 600 /etc/stumble-automod/meatspace.env
+nano /etc/stumble-automod/meatspace.env       # bot login, nick, AUTOMOD_ROOM
+systemctl enable --now stumble-automod@meatspace
+journalctl -u stumble-automod@meatspace -f    # watch it log in
+```
+
+- Re-run `install.sh` to update; it restarts running bots.
+- More rooms: another env file with its own `AUTOMOD_ROOM` and `CDP_DEBUG_PORT`,
+  then `systemctl enable --now stumble-automod@<name>`.
+- Each bot keeps its data (autoban list, mod log, promotions) in
+  `/var/lib/stumble-automod/<name>/`.
+
 ## Config reference (`.env`)
 
 | Variable | Required? | What it does |
@@ -101,7 +122,10 @@ sure a graphical session (X11) is actually running and `$DISPLAY` is set.
 | `AUTOMOD_LOGIN_EMAIL` | yes | The bot account's login |
 | `AUTOMOD_LOGIN_PASS` | yes | The bot account's password (quote it if it has `#`) |
 | `AUTOMOD_BOT_NICK` | no | Nick the bot uses in-room (default: Enforcer) |
+| `AUTOMOD_ROOM` | no | StumbleChat room to moderate (default: meatspace) |
 | `BROWSER_PATH` | no | Path to a specific Chrome/Chromium binary |
+| `SERVER_MODE` | no | `true` on a Linux server: non-headless Chrome on an Xvfb display |
+| `SIRLOIN_DATA_DIR` | no | Where this bot keeps its data (bans, logs) |
 | `AUTOMOD_EMAIL_TO` / `AUTOMOD_EMAIL_FROM` / `SMTP_*` | no | Enables a daily moderation-log email digest |
 
 ## Mod commands (typed in chat, prefixed with `.`)

@@ -25,7 +25,11 @@ const CONFIG = {
   BOT_NICK:    process.env.AUTOMOD_BOT_NICK || 'SirLoin_v1',
 
   HEADLESS:         String(process.env.HEADLESS || '').toLowerCase() === 'true',
-  BROWSER_PATH:     process.env.BROWSER_PATH || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+  BROWSER_PATH:     process.env.BROWSER_PATH || (process.platform === 'win32'
+    ? 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
+    : ''),
+  // StumbleChat room this instance moderates (stumblechat.com/room/<ROOM>)
+  ROOM:             (process.env.AUTOMOD_ROOM || 'meatspace').trim(),
 
   // IMPORTANT: each running bot needs its own CDP port and Chrome profile.
   // If two bots share these, Puppeteer connects them to the same Chrome session/cookies.
@@ -102,7 +106,7 @@ const BOT_NICK = process.env.AUTOMOD_BOT_NICK || 'Enforcer';
 const MEAT_NICKS = [BOT_NICK];
 
 const ROOM_NICKS = {
-  meatspace: BOT_NICK,
+  [CONFIG.ROOM]: BOT_NICK,
 };
 
 const RATE_CONFIG = {

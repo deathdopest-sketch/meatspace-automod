@@ -14,7 +14,7 @@
 const path = require('path');
 const fs   = require('fs');
 
-const _crashLog = path.join(__dirname, 'automod_crash.log');
+const _crashLog = path.join(process.env.SIRLOIN_DATA_DIR || __dirname, 'automod_crash.log');
 function _writeCrash(type, err) {
   try {
     const line = `[${new Date().toISOString()}] [${type}] ${err?.stack || err?.message || String(err)}\n`;
@@ -85,6 +85,7 @@ const AUTOMOD_WARN = [
 class AutomodBot {
   constructor() {
     const dataDir = process.env.SIRLOIN_DATA_DIR || path.join(__dirname, 'SirLoin_Data');
+    this._dataDir = dataDir;
     this.log      = new Logger(dataDir);
     this.storage  = new StorageManager(dataDir, this.log);
     this.storage.init();
@@ -150,10 +151,10 @@ class AutomodBot {
     await this.browser.launch();
 
     await this._login();
-    await this._joinRoom('meatspace');
+    await this._joinRoom(CONFIG.ROOM);
 
     this._startDailyEmail();
-    this.log.info('[AutoMod] Online — meatspace is being watched.');
+    this.log.info(`[AutoMod] Online — ${CONFIG.ROOM} is being watched.`);
   }
 
   /** Resolves once the underlying Chrome connection is lost (crash, kill, VM suspend, etc). */
@@ -1434,11 +1435,11 @@ class AutomodBot {
     return m[2].toLowerCase() === 's' ? n * 1000 : m[2].toLowerCase() === 'm' ? n * 60000 : n * 3600000;
   }
 
-  _moderationFile()  { return path.join(__dirname, 'SirLoin_Data', 'moderation.json'); }
-  _promotionFile()   { return path.join(__dirname, 'SirLoin_Data', 'promotions.json'); }
-  _attackerFile()    { return path.join(__dirname, 'SirLoin_Data', 'attackers.json');  }
-  _autoBanFile()     { return path.join(__dirname, 'SirLoin_Data', 'autoban.json');    }
-  _slurFilterFile()  { return path.join(__dirname, 'SirLoin_Data', 'slurfilter.json'); }
+  _moderationFile()  { return path.join(this._dataDir, 'moderation.json'); }
+  _promotionFile()   { return path.join(this._dataDir, 'promotions.json'); }
+  _attackerFile()    { return path.join(this._dataDir, 'attackers.json');  }
+  _autoBanFile()     { return path.join(this._dataDir, 'autoban.json');    }
+  _slurFilterFile()  { return path.join(this._dataDir, 'slurfilter.json'); }
 
   _loadModeration() {
     try {
@@ -1535,7 +1536,7 @@ class AutomodBot {
 
   _writeSecurityLog({ roomName, nick, type, count, text }) {
     try {
-      const logPath = path.join(__dirname, 'automod_security.log');
+      const logPath = path.join(this._dataDir, 'automod_security.log');
       const entry   = `[${new Date().toISOString()}] [INJECTION] room=${roomName} nick=${nick} type=${type} attempt=#${count} text=${JSON.stringify(text.slice(0, 120))}\n`;
       fs.appendFileSync(logPath, entry, 'utf8');
     } catch (_) {}
@@ -1628,8 +1629,8 @@ ${table}
 
 === BOT STATUS ===
   Uptime: ${this._formatUptime()}
-  Room: meatspace
-  Users tracked: ${this._roomPresence['meatspace']?.size || 0}
+  Room: ${CONFIG.ROOM}
+  Users tracked: ${this._roomPresence[CONFIG.ROOM]?.size || 0}
 `;
 
     try {
